@@ -3,6 +3,7 @@
 #include <limits>
 #include <time.h>
 #include <algorithm>
+#include <fstream>
 #define ARMA_USE_SUPERLU 1
 
 // [[Rcpp::depends(RcppArmadillo)]]
@@ -12,7 +13,6 @@ using namespace arma;
 
 // [[Rcpp::plugins("cpp11")]]
 
-// [[Rcpp::export]]
 arma::uvec mysetdiff(arma::uvec& x, arma::uvec& y){
   
   x = unique(x);
@@ -25,7 +25,6 @@ arma::uvec mysetdiff(arma::uvec& x, arma::uvec& y){
   return x;
 }
 
-// [[Rcpp::export]]
 arma::uvec std_setdiff(arma::uvec& x, arma::uvec& y) {
   
   std::vector<int> a = arma::conv_to< std::vector<int> >::from(arma::sort(x));
@@ -36,6 +35,22 @@ arma::uvec std_setdiff(arma::uvec& x, arma::uvec& y) {
                       std::inserter(out, out.end()));
   
   return arma::conv_to<arma::uvec>::from(out);
+}
+
+// [[Rcpp::export]]
+arma::mat ReshapeMat(arma::vec a, arma::uword p, arma::uword n, arma::uvec estim, arma::uvec last){
+  arma::mat   B     = zeros(n, p);
+  arma::vec   X     = zeros(1, 1);
+  arma::uvec  idi   = regspace<uvec>(0, p - 2);
+  arma::uvec  rowi  = zeros<uvec>(1, 1);
+  for(uword i = 0; i < n; i++){
+    rowi(0)         = i;
+    X(0)            = std::max(1 - accu(a.elem(idi)), 0.0);
+    B(rowi, estim)  = a.elem(idi).t();
+    B(rowi, last) = X;
+    idi             = idi + ones<uvec>(p - 1, 1)*(p - 1); 
+  }
+  return(B);
 }
 
 // Positive Gaussian distribution 
@@ -208,6 +223,7 @@ double TruncGaussMH(double X, double Mu, double Sigma, double Mum, double Mup){
 
 /*     Sampling from Gaussian truncated on a simplex     */
 /* Adapted from Matlab Code provided by Nicolas Dobigeon */
+// [[Rcpp::export]]
 vec MVGSimplex(vec S, vec const& Mean, mat const& Var){
   vec Mu            = Mean;
   uword p           = Mu.n_elem;
@@ -459,7 +475,7 @@ List BHLU_MNI(arma::cube Y, arma::mat M, arma::uword nIter, arma::uword burn, ar
   arma::mat       mu          = zeros(p - 1);
   arma::mat       w;
   arma::mat       Tmp;
-  arma::mat       ThetaE      = zeros(n*q, p);
+  arma::mat       ThetaE      = randu(n*q, p);
   arma::vec       thetahat    = randu(n*q*(p - 1));
   arma::vec       thetarep    = randu(q*(p - 1));
   arma::vec       s           = ones(r, 1);
@@ -478,6 +494,8 @@ List BHLU_MNI(arma::cube Y, arma::mat M, arma::uword nIter, arma::uword burn, ar
   arma::mat       StorePhi    = zeros(nIter, q*q);
   arma::mat       StoreS      = zeros(nIter, r);
   arma::mat       StoreA      = zeros(nIter, q);
+  arma::mat       saveVar(n, p - 1);
+  arma::mat       saveMu(n, p - 1);
   /*arma::cube      KeepTheta;
   arma::mat       KeepOmega;
   arma::mat       KeepPhi;
@@ -497,8 +515,8 @@ List BHLU_MNI(arma::cube Y, arma::mat M, arma::uword nIter, arma::uword burn, ar
     Qtilde              = kron(eye(q, q), Q);
     SigmaInv            = kron(PhiInv, OmegaInv);
     C                   = Qtilde.t()*SigmaInv*Qtilde + Vinv;
-    idq                 = regspace<uvec>(0, q - 1);
-    idx                 = regspace<uvec>(0, q - 1);
+    idq                 = regspace<uvec>(0, q*(p - 1) - 1);
+    idx                 = regspace<uvec>(0, q*(p - 1) - 1);
     R                   = zeros(r, r);
     V                   = zeros(q, q);
     mpMat               = repmat(mp, 1, q);
@@ -508,23 +526,22 @@ List BHLU_MNI(arma::cube Y, arma::mat M, arma::uword nIter, arma::uword burn, ar
       idi               = regspace<uvec>(0, p - 2);
       thetarep          = thetahat(idq);
       for(uword j = 0; j < q; j++){
-        notidx              = std_setdiff(idx, idi);
-        var                 = inv_sympd(C(idi, idi));
-        mu                  = var*(w(idi) - C(idi, notidx)*thetarep(notidx));
+        notidx          = std_setdiff(idx, idi);
+        var             = inv_sympd(C(idi, idi));
+        mu              = var*(w(idi) - C(idi, notidx)*thetarep(notidx));
         if(p == 2){
           thetatmp          = thetarep(idi);
           thetarep(idi(0))  = TruncGauss(thetatmp(0), mu(0), sqrt(var(0, 0)), 0.0, 1.0);
         } else {
-          thetarep(idi)     = MVGSimplex(thetahat(idi), mu, var);
+          thetatmp          = thetarep(idi);
+          thetarep(idi)     = MVGSimplex(thetatmp, mu, var);
         }
-        idi                 = idi + ones<uvec>(p - 1, 1)*(p - 1);
+        idi             = idi + ones<uvec>(p - 1, 1)*(p - 1);
       }
-      thetahat(idq)         = thetarep;
-      idq                   = idq + ones<uvec>(q, 1)*q;
+      thetahat(idq)     = thetarep;
+      idq               = idq + ones<uvec>(q*(p - 1), 1)*(q*(p - 1));
     }
-    Tmp                 = reshape(thetahat, n*q, p - 1);
-    ThetaE.cols(estim)  = Tmp;
-    ThetaE.cols(last)   = ones(n*q) - sum(Tmp, 1);
+    ThetaE              = ReshapeMat(thetahat, p, q*n, estim, last);
     Mu                  = myreshape(M*ThetaE.t(), n, q, r);
     E                   = Y - Mu;
     for(uword i = 0; i < n; i++){
@@ -555,6 +572,7 @@ List BHLU_MNI(arma::cube Y, arma::mat M, arma::uword nIter, arma::uword burn, ar
     }
   }
   end = clock();
+  //thetahat.save("ThetaHat.txt", arma_ascii);
   ttime = ((double) (end - start)) / CLOCKS_PER_SEC;
   Rcpp::Rcout << "                                               " << std::endl;
   Rcpp::Rcout << " Wrapping up! " << std::endl;
@@ -643,7 +661,7 @@ List BHLU_MNNRM(arma::cube Y, arma::mat M, arma::mat Ginv, arma::uword nIter, ar
     SigmaInv            = kron(Ginv, kron(PhiInv, OmegaInv));
     C                   = Qtilde.t()*SigmaInv*Qtilde + Vinv;
     Z                   = makeZ(Y, mp, n, q, r);
-    w                   = Qtilde.t()*SigmaInv*vectorise(Z);// + Vinv*vectorise(priormu.cols(estim));
+    w                   = Qtilde.t()*SigmaInv*vectorise(Z);
     allidx              = regspace<uvec>(0, n*q*(p - 1) - 1);
     idx                 = regspace<uvec>(0, p - 2);
     R                   = zeros(r, r);
@@ -670,8 +688,6 @@ List BHLU_MNNRM(arma::cube Y, arma::mat M, arma::mat Ginv, arma::uword nIter, ar
     from_q              = 0;
     to_q                = r - 1;
     for(uword i = 0; i < n; i++){
-      //R                 = R + E.slice(i)*PhiInv*E.slice(i).t();
-      //V                 = V + E.slice(i).t()*OmegaInv*E.slice(i);
       LE.cols(from_r, to_r) = E.slice(i);
       WE.cols(from_q, to_q) = E.slice(i).t();
       to_r              = to_r + q;
@@ -679,10 +695,8 @@ List BHLU_MNNRM(arma::cube Y, arma::mat M, arma::mat Ginv, arma::uword nIter, ar
       to_q              = to_q + r;
       from_q            = from_q + r;
     }
-	  //LE                  = resize(E, r, q*n, 1);
- 	  //WE                  = resize(E, q, r*n, 1);
-	  R                   = LE*kron(Ginv, PhiInv)*LE.t();
-	  V                   = WE*kron(Ginv, OmegaInv)*WE.t();
+	R                   = LE*kron(Ginv, PhiInv)*LE.t();
+	V                   = WE*kron(Ginv, OmegaInv)*WE.t();
     Omega               = InverseWishart(nu + r + n*q - 1, inv_sympd(R + 2*nu*diagmat(s)));
     OmegaInv            = inv_sympd(Omega);
     Phi                 = InverseWishart(gamma + q + n*r - 1, inv_sympd(V + 2*gamma*diagmat(a)));
